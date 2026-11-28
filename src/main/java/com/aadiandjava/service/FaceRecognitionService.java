@@ -218,16 +218,20 @@ public class FaceRecognitionService {
             return List.of();
         }
 
-        Map<Long, Photo> photoById = new LinkedHashMap<>();
+        List<Long> photoIds = new ArrayList<>(candidatePhotos.size());
         for (Photo p : candidatePhotos) {
             if (p.getId() != null) {
-                photoById.put(p.getId(), p);
+                photoIds.add(p.getId());
             }
         }
+        if (photoIds.isEmpty()) {
+            return List.of();
+        }
 
+        // Only load PhotoFace rows for the candidate photos (avoid full-table findAll())
         Map<Long, List<PhotoFace>> facesByPhotoId = new HashMap<>();
-        for (PhotoFace pf : photoFaceRepository.findAll()) {
-            if (pf.getPhoto() != null && pf.getPhoto().getId() != null && photoById.containsKey(pf.getPhoto().getId())) {
+        for (PhotoFace pf : photoFaceRepository.findByPhotoIdIn(photoIds)) {
+            if (pf.getPhoto() != null && pf.getPhoto().getId() != null) {
                 facesByPhotoId.computeIfAbsent(pf.getPhoto().getId(), k -> new ArrayList<>()).add(pf);
             }
         }
@@ -238,36 +242,19 @@ public class FaceRecognitionService {
 
         for (Photo photo : candidatePhotos) {
             Long photoId = photo.getId();
-            if (photoId == null) {
+            List<PhotoFace> storedFaces = (photoId != null) ? facesByPhotoId.get(photoId) : null;
+            if (storedFaces == null || storedFaces.isEmpty()) {
                 continue;
             }
-
-            List<PhotoFace> storedFaces = facesByPhotoId.get(photoId);
-            if ((storedFaces == null || storedFaces.isEmpty())
-                    && photo.getImageUrl() != null
-                    && !photo.getImageUrl().isBlank()) {
-                List<String> extractedJsons = fetchAndExtractEmbeddingsFromUrl(photo);
-                storedFaces = new ArrayList<>();
-                for (String embJson : extractedJsons) {
-                    PhotoFace pf = new PhotoFace();
-                    pf.setPhoto(photo);
-                    pf.setFaceEmbeddingJson(embJson);
-                    photoFaceRepository.save(pf);
-                    storedFaces.add(pf);
-                }
-            }
-
-            if (storedFaces != null) {
-                for (PhotoFace pf : storedFaces) {
-                    List emb = parseFloatList(pf.getFaceEmbeddingJson());
-                    if (!emb.isEmpty()) {
-                        long cid = syntheticCandidateId++;
-                        Map item = new LinkedHashMap();
-                        item.put("id", cid);
-                        item.put("embedding", emb);
-                        faceCandidates.add(item);
-                        candidateIdToPhotoId.put(cid, photoId);
-                    }
+            for (PhotoFace pf : storedFaces) {
+                List emb = parseFloatList(pf.getFaceEmbeddingJson());
+                if (!emb.isEmpty()) {
+                    long cid = syntheticCandidateId++;
+                    Map item = new LinkedHashMap();
+                    item.put("id", cid);
+                    item.put("embedding", emb);
+                    faceCandidates.add(item);
+                    candidateIdToPhotoId.put(cid, photoId);
                 }
             }
         }
